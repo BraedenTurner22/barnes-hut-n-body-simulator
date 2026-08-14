@@ -16,8 +16,17 @@ struct vec2 {
 
     // Operator Overloading for Vector Math
     vec2 operator+(const vec2& other) const { return vec2(x + other.x, y + other.y); }
+    vec2& operator+=(const vec2& other) { x += other.x;
+                                         y += other.y; 
+                                         return *this;
+                                        }
     vec2 operator-(const vec2& other) const { return vec2(x - other.x, y - other.y); }
     vec2 operator*(float scalar) const { return vec2(x * scalar, y * scalar); }
+    vec2 operator/(float scalar) const { return vec2(x / scalar, y / scalar); }
+    vec2& operator/=(float scalar) { x /= scalar;
+                                    y /= scalar; 
+                                    return *this;
+                                   }
 
     // Utility functions
     float length() const { return std::sqrt(x * x + y * y); }
