@@ -28,6 +28,10 @@ struct vec2 {
                                     return *this;
                                    }
 
+    float mag_sq() const {
+        return (x * x) + (y * y);
+    }
+
     // Utility functions
     float length() const { return std::sqrt(x * x + y * y); }
 };
