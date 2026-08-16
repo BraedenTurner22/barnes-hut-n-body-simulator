@@ -1,5 +1,5 @@
-#ifndef MATH_H
-#define MATH_H
+#ifndef VEC2_H
+#define VEC2_H
 
 #include <iostream>
 #include <cmath>
@@ -33,7 +33,7 @@ struct vec2 {
     }
 
     // Utility functions
-    float length() const { return std::sqrt(x * x + y * y); }
+    float length() const { return std::sqrt((x * x) + (y * y)); }
 };
 
 #endif

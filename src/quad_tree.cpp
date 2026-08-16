@@ -4,9 +4,10 @@
 #include <memory>
 #include <utility>
 #include <ranges>
+#include <cmath>
 
 // include project math utilities (vec2)
-#include "../include/math.h"
+#include "../include/vec2.h"
 #include "../include/body.h"
 
 struct Quad {
