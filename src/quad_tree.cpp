@@ -64,7 +64,11 @@ struct Node {
     // children is just the index for the first child, defaults to 0 in constructor
     // From this index, we can deduce the indices of the other 3 child nodes
     std::size_t children;
-    std::size_t next_;
+    std::size_t next_; /* {1, 0}
+                          {3, 2}
+
+                          0 -> 1 -> 2 -> 3. At 3, next is 3's parent quadrant
+                        */
     vec2 pos;
     float mass;
     Quad quad_;
