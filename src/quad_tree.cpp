@@ -53,7 +53,7 @@ struct Quad {
     std::array<Quad, 4> subdivide() const {
         std::array<Quad, 4> result;
         for (int i{0}; i < 4; ++i) {
-            result[] = into_quadrant(i);
+            result[i] = into_quadrant(i);
         }
         return result;
     }
