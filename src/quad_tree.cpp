@@ -7,8 +7,8 @@
 #include <cmath>
 
 // include project math utilities (vec2)
-#include "../include/vec2.h"
-#include "../include/body.h"
+#include "vec2.h"
+#include "body.h"
 
 struct Quad {
     vec2 center;

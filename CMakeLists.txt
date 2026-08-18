@@ -24,6 +24,7 @@ target_include_directories(glad PUBLIC
 
 add_executable(${PROJECT_NAME}
     src/main.cpp
+    src/renderer.cpp
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
