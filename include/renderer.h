@@ -1,25 +1,24 @@
-// renderer.h
 #pragma once
+#include <memory>
 
 struct GLFWwindow;
+class Shader;
 
 class Renderer {
 public:
     Renderer(int width, int height, const char* title);
     ~Renderer();
-
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
 
-    // Returns true once the user has requested the window close
-    // (clicked the close button, pressed the bound close key, etc.)
     bool shouldClose() const;
-
-    // Call once per frame: clears the screen, swaps buffers, polls input events.
-    // Actual particle drawing gets added here once shaders/VBOs exist.
+    void checkEscapeKeyInput();
     void beginFrame();
+    void draw();
     void endFrame();
 
 private:
     GLFWwindow* window_ = nullptr;
+    unsigned int VAO_ = 0, VBO_ = 0;
+    std::unique_ptr<Shader> shader_;
 };

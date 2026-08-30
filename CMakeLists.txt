@@ -25,6 +25,13 @@ target_include_directories(glad PUBLIC
 add_executable(${PROJECT_NAME}
     src/main.cpp
     src/renderer.cpp
+    src/shader.cpp
+)
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/shaders
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
