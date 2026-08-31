@@ -1,9 +1,11 @@
 #include "renderer.h"
 #include "shader.h"
+#include "body.h"
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <iostream>
 #include <cstdlib>
+#include <cstddef>
 
 namespace {
 void glfwErrorCallback(int error, const char* description) {
@@ -33,11 +35,14 @@ Renderer::Renderer(int width, int height, const char* title) {
     // which is why it happens down here in the constructor BODY, not as a
     // default-initialized member -- see the ordering warning from before. ---
 
-    float vertices[] = {   // local now, not a global -- no more ODR risk
-        -0.5f, -0.5f, 0.0f,
-         0.5f, -0.5f, 0.0f,
-         0.0f,  0.5f, 0.0f
-    };
+    // Below is old versions of vertices/rectangles I implemented for practice.
+    // Switched to GL point for individual bodies in simulation
+    
+    // float vertices[] = {   // local now, not a global -- no more ODR risk
+    //     -0.5f, -0.5f, 0.0f,
+    //      0.5f, -0.5f, 0.0f,
+    //      0.0f,  0.5f, 0.0f
+    // };
 
     // Representation for rectangle object if desired, must be iomplemented with Element Buffer OBject (EBO)
     // float vertices[] = {
@@ -126,4 +131,11 @@ void Renderer::draw() {
 void Renderer::endFrame() {
     glfwSwapBuffers(window_);
     glfwPollEvents();
+}
+
+void updateParticles(const std::vector<Body>& bodies) {
+
+}
+void drawParticles() {
+    shader_->use();
 }
