@@ -5,6 +5,7 @@
 #include <vector>
 #include <limits>
 #include <cmath>
+#include <atomic>
 
 #include "vec2.h"
 #include "body.h"
@@ -64,9 +65,16 @@ struct Node {
     vec2 pos;
     float mass;
     Quad quad_;
+    std::size_t depth;
 
-    Node(std::size_t next, Quad quad)
-        : children(0), next_(next), pos(vec2(0, 0)), mass(0.0f), quad_(quad) {}
+    // Default-constructible so the node pool can be preallocated in one
+    // shot (QuadTree::clear) instead of grown via push_back -- required
+    // once insert() runs concurrently, since a growing std::vector can
+    // reallocate and invalidate every other thread's in-flight node
+    // references.
+    Node() : children(0), next_(0), pos(vec2(0, 0)), mass(0.0f), quad_(Quad{vec2(0, 0), 0.0f}), depth(0) {}
+    Node(std::size_t next, Quad quad, std::size_t depth)
+        : children(0), next_(next), pos(vec2(0, 0)), mass(0.0f), quad_(quad), depth(depth) {}
 
     bool is_leaf() const { return children == 0; }
     bool is_branch() const { return children != 0; }
@@ -78,98 +86,187 @@ private:
     float t_sq; // theta squared, opening angle criterion
     float e_sq; // epsilon squared, gravitational softening
     const size_t ROOT = 0;
+
+    // Preallocated, fixed-capacity node pool. Concurrent insert() calls
+    // claim node slots via nodeCount_ (an atomic bump allocator) instead
+    // of nodes_.push_back(), which would race on the vector's internal
+    // reallocation. Capacity is sized generously in clear() from the
+    // body count and never grows mid-build -- if a run ever needs more
+    // (pathologically clustered positions subdividing far deeper than
+    // usual), allocateNode() aborts loudly rather than silently
+    // corrupting memory past the end of the vector.
     std::vector<Node> nodes_;
-    std::vector<size_t> parents_;
+    std::atomic<std::size_t> nodeCount_{0};
+
+    // One spinlock per node slot, guarding that node's is_leaf/is_branch
+    // state and its pos/mass/children fields during insertion. Only ever
+    // one lock held at a time (descend releases the parent's lock before
+    // acquiring the child's) so there's no lock-ordering cycle possible,
+    // hence no deadlock risk.
+    std::vector<std::atomic<int>> locks_;
+
+    void lockNode(std::size_t idx) {
+        int expected = 0;
+        while (!locks_[idx].compare_exchange_weak(
+            expected, 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+            expected = 0;
+        }
+    }
+    void unlockNode(std::size_t idx) {
+        locks_[idx].store(0, std::memory_order_release);
+    }
 
 public:
     // No default constructor -- t_sq/e_sq must always be provided,
     // so there's no way to end up with a QuadTree whose acc() reads
     // uninitialized memory.
     QuadTree(float theta, float epsilon)
-        : t_sq(theta * theta), e_sq(epsilon * epsilon), nodes_(), parents_() {}
+        : t_sq(theta * theta), e_sq(epsilon * epsilon) {}
 
+    // Allocates 4 fresh node slots and initializes them as children of
+    // `node` (whose lock the caller must already hold). Only ever called
+    // on a node the caller has exclusive access to, so the writes below
+    // need no locking of their own -- publishing nodes_[node].children
+    // last is what makes the new subtree visible to other threads.
     std::size_t subdivide(std::size_t node) {
-        parents_.push_back(node);
-        std::size_t children = nodes_.size();
-        nodes_[node].children = children;
-
-        std::vector<size_t> nexts = {children + 1, children + 2, children + 3, nodes_[node].next_};
+        std::size_t childDepth = nodes_[node].depth + 1;
+        std::size_t children = nodeCount_.fetch_add(4, std::memory_order_relaxed);
+        if (children + 3 >= nodes_.size()) {
+            std::cerr << "QuadTree node pool exhausted (capacity=" << nodes_.size()
+                      << "). Bump the capacity multiplier in clear().\n";
+            std::exit(EXIT_FAILURE);
+        }
 
         auto quads = nodes_[node].quad_.subdivide();
-        for (int i{0}; i < 4; ++i) {
-            nodes_.push_back(Node{nexts[i], quads[i]});
+        std::size_t nexts[4] = {children + 1, children + 2, children + 3, nodes_[node].next_};
+        for (int i = 0; i < 4; ++i) {
+            nodes_[children + i] = Node(nexts[i], quads[i], childDepth);
         }
+        nodes_[node].children = children;
         return children;
     }
 
     void insert(vec2 pos, float mass) {
-        auto node = ROOT;
-
-        while (nodes_[node].is_branch()) {
-            auto q = nodes_[node].quad_.find_quadrant(pos);
-            node = nodes_[node].children + q;
-        }
-
-        if (nodes_[node].is_empty()) {
-            nodes_[node].pos = pos;
-            nodes_[node].mass = mass;
-            return;
-        }
-
-        auto p = nodes_[node].pos;
-        auto m = nodes_[node].mass;
-
-        if (pos.x == p.x && pos.y == p.y) {
-            nodes_[node].mass += mass;
-            return;
-        }
+        std::size_t node = ROOT;
 
         while (true) {
-            auto children = subdivide(node);
+            lockNode(node);
+
+            if (nodes_[node].is_branch()) {
+                // children is write-once (a node is only ever subdivided
+                // while its own lock is held below, and never again once
+                // is_branch() is true), so it's safe to read it here and
+                // release before locking the child -- never holding two
+                // node locks at once.
+                auto q = nodes_[node].quad_.find_quadrant(pos);
+                std::size_t next = nodes_[node].children + q;
+                unlockNode(node);
+                node = next;
+                continue;
+            }
+
+            if (nodes_[node].is_empty()) {
+                nodes_[node].pos = pos;
+                nodes_[node].mass = mass;
+                unlockNode(node);
+                return;
+            }
+
+            vec2 p = nodes_[node].pos;
+            float m = nodes_[node].mass;
+
+            if (pos.x == p.x && pos.y == p.y) {
+                nodes_[node].mass += mass;
+                unlockNode(node);
+                return;
+            }
+
+            // Two distinct bodies want this leaf: subdivide while still
+            // holding node's lock, so no other thread can observe it
+            // mid-split or double-subdivide it.
+            std::size_t children = subdivide(node);
+            unlockNode(node);
 
             auto q1 = nodes_[node].quad_.find_quadrant(p);
             auto q2 = nodes_[node].quad_.find_quadrant(pos);
 
-            if (q1 == q2) {
-                node = children + q1;
-
-                if (nodes_[node].quad_.size < 1e-6f) {
-                    nodes_[node].mass = m + mass;
-                    nodes_[node].pos = (p * m + pos * mass) * (1.0f / nodes_[node].mass);
-                    return;
-                }
-            } else {
-                auto n1 = children + q1;
-                auto n2 = children + q2;
-
-                nodes_[n1].pos = p;
-                nodes_[n1].mass = m;
-                nodes_[n2].pos = pos;
-                nodes_[n2].mass = mass;
+            if (q1 != q2) {
+                std::size_t n1 = children + q1, n2 = children + q2;
+                lockNode(n1); nodes_[n1].pos = p; nodes_[n1].mass = m; unlockNode(n1);
+                lockNode(n2); nodes_[n2].pos = pos; nodes_[n2].mass = mass; unlockNode(n2);
                 return;
             }
+
+            std::size_t child = children + q1;
+            if (nodes_[child].quad_.size < 1e-6f) {
+                // Handle infinite subdivision loop near float precision
+                // limit: merge here at the weighted-average position
+                // instead of splitting further.
+                lockNode(child);
+                nodes_[child].mass = m + mass;
+                nodes_[child].pos = (p * m + pos * mass) * (1.0f / nodes_[child].mass);
+                unlockNode(child);
+                return;
+            }
+
+            // Still colliding one level down and not yet degenerate --
+            // place the pre-existing body here, then let the next pass
+            // through this same loop (with node = child) resolve `pos`
+            // against it, recursing into further subdivisions exactly
+            // like the single-threaded version's inner loop did.
+            lockNode(child);
+            nodes_[child].pos = p;
+            nodes_[child].mass = m;
+            unlockNode(child);
+            node = child;
         }
     }
 
+    // Iterate depth-first from the deepest level up to compute center of
+    // masses. All parent nodes' center of masses require the center of
+    // mass of their children first, hence the reverse (leaves-up) order.
+    //
+    // Parallelized level-by-level: nodes at the same depth are siblings
+    // or cousins with no dependency on each other, so each level is
+    // safe to run as a plain parallel for. OpenMP's parallel-for has an
+    // implicit barrier at the end, which is exactly the synchronization
+    // needed before the next (shallower) level starts -- every node one
+    // level down is guaranteed finished before its parent reads it.
     void propagate() {
-        if (nodes_.empty()) return;
+        std::size_t n = nodeCount_.load(std::memory_order_relaxed);
+        if (n == 0) return;
 
-        for (std::size_t node_idx = parents_.size(); node_idx-- > 0;) {
-            auto i = nodes_[node_idx].children;
+        std::size_t maxDepth = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (nodes_[i].is_branch()) maxDepth = std::max(maxDepth, nodes_[i].depth);
+        }
 
-            nodes_[node_idx].pos = nodes_[i].pos * nodes_[i].mass +
-                               nodes_[i + 1].pos * nodes_[i + 1].mass +
-                               nodes_[i + 2].pos * nodes_[i + 2].mass +
-                               nodes_[i + 3].pos * nodes_[i + 3].mass;
+        std::vector<std::vector<std::size_t>> levels(maxDepth + 1);
+        for (std::size_t i = 0; i < n; ++i) {
+            if (nodes_[i].is_branch()) levels[nodes_[i].depth].push_back(i);
+        }
 
-            nodes_[node_idx].mass = nodes_[i].mass + nodes_[i + 1].mass +
-                                nodes_[i + 2].mass + nodes_[i + 3].mass;
+        for (std::size_t d = levels.size(); d-- > 0;) {
+            auto& level = levels[d];
+            #pragma omp parallel for
+            for (std::size_t k = 0; k < level.size(); ++k) {
+                std::size_t idx = level[k];
+                auto i = nodes_[idx].children;
 
-            auto total_mass = nodes_[node_idx].mass;
-            if (total_mass > 0.0f) {
-                nodes_[node_idx].pos /= total_mass;
-            } else {
-                nodes_[node_idx].pos = vec2(0, 0);
+                nodes_[idx].pos = nodes_[i].pos * nodes_[i].mass +
+                                   nodes_[i + 1].pos * nodes_[i + 1].mass +
+                                   nodes_[i + 2].pos * nodes_[i + 2].mass +
+                                   nodes_[i + 3].pos * nodes_[i + 3].mass;
+
+                nodes_[idx].mass = nodes_[i].mass + nodes_[i + 1].mass +
+                                    nodes_[i + 2].mass + nodes_[i + 3].mass;
+
+                auto total_mass = nodes_[idx].mass;
+                if (total_mass > 0.0f) {
+                    nodes_[idx].pos /= total_mass;
+                } else {
+                    nodes_[idx].pos = vec2(0, 0);
+                }
             }
         }
     }
@@ -183,7 +280,7 @@ public:
 
             vec2 d = n.pos - pos;
             float d_sq = d.mag_sq();
-            auto denominator = (d_sq + e_sq) * std::sqrt(d_sq);
+            auto denominator = (d_sq + e_sq) * std::sqrt(d_sq + e_sq);
 
             if (n.is_leaf() || n.quad_.size * n.quad_.size < d_sq * t_sq) {
                 acc += d * std::min(n.mass / denominator, std::numeric_limits<float>::max());
@@ -196,9 +293,17 @@ public:
         return acc;
     }
 
-    void clear(Quad root_quad) {
-        nodes_.clear();
-        parents_.clear();
-        nodes_.emplace_back(0, root_quad);
+    // bodyCount sizes the node pool up front: 8 nodes/body is a generous
+    // margin for clustered distributions (worst case -- many bodies
+    // subdividing repeatedly down near the 1e-6 size floor -- could
+    // still exceed it; subdivide() aborts loudly rather than silently
+    // overrunning the pool if that happens).
+    void clear(Quad root_quad, std::size_t bodyCount) {
+        std::size_t capacity = 1 + bodyCount * 8;
+        nodes_.assign(capacity, Node{});
+        locks_ = std::vector<std::atomic<int>>(capacity);
+        nodeCount_.store(0, std::memory_order_relaxed);
+        nodes_[0] = Node(0, root_quad, 0);
+        nodeCount_.store(1, std::memory_order_relaxed);
     }
 };

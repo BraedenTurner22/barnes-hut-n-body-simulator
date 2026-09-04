@@ -2,7 +2,7 @@
 #define BODY_H
 
 #include <iostream>
-#include "./math.h"
+#include "vec2.h"
 
 struct Body {
     vec2 pos_;

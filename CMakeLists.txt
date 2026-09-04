@@ -14,6 +14,26 @@ find_package(glfw3 REQUIRED)
 # --- OpenGL itself (provides the macOS framework link) ---
 find_package(OpenGL REQUIRED)
 
+find_package(glm REQUIRED)
+
+# Homebrew's libomp is keg-only (not symlinked into the default compiler
+# search paths), so AppleClang's find_package(OpenMP) can't locate it
+# without these hints pointing straight at the Homebrew prefix.
+if(APPLE)
+    execute_process(
+        COMMAND brew --prefix libomp
+        OUTPUT_VARIABLE LIBOMP_PREFIX
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    set(OpenMP_C_FLAGS "-Xpreprocessor -fopenmp -I${LIBOMP_PREFIX}/include")
+    set(OpenMP_C_LIB_NAMES "omp")
+    set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp -I${LIBOMP_PREFIX}/include")
+    set(OpenMP_CXX_LIB_NAMES "omp")
+    set(OpenMP_omp_LIBRARY "${LIBOMP_PREFIX}/lib/libomp.dylib")
+endif()
+
+find_package(OpenMP REQUIRED)
+
 # --- glad: compiling generated source directly into target, not an actual package ---
 add_library(glad STATIC
     third_party/glad/src/glad.c
@@ -26,6 +46,7 @@ add_executable(${PROJECT_NAME}
     src/main.cpp
     src/renderer.cpp
     src/shader.cpp
+    src/simulation.cpp
 )
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
@@ -38,6 +59,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     glad
     glfw
     OpenGL::GL
+    glm::glm
+    OpenMP::OpenMP_CXX
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE

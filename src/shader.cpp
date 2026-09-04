@@ -5,6 +5,7 @@
 #include <sstream>
 #include <iostream>
 #include <cstdlib>
+#include <glm/gtc/type_ptr.hpp>
 
 std::string Shader::readFile(const std::string& path) {
     std::ifstream file(path);
@@ -68,4 +69,12 @@ Shader::~Shader() {
 
 void Shader::use() const {
     glUseProgram(id_);
+}
+
+void Shader::setMat4(const std::string& name, const glm::mat4& matrix) const {
+    glUniformMatrix4fv(glGetUniformLocation(id_, name.c_str()), 1, GL_FALSE, glm::value_ptr(matrix));
+}
+
+void Shader::setFloat(const std::string& name, float value) const {
+    glUniform1f(glGetUniformLocation(id_, name.c_str()), value);
 }
